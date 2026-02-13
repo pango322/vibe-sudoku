@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sudoku Pro - Unique Solution Edition</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        :root { --cell-size: 60px; }
+        body { background-color: #f8fafc; font-family: 'Inter', system-ui, sans-serif; overflow-x: hidden; }
+        .game-wrapper { display: flex; gap: 40px; justify-content: center; margin-top: 40px; flex-wrap: wrap; position: relative; }
+        .sudoku-grid { display: grid; grid-template-columns: repeat(9, var(--cell-size)); grid-template-rows: repeat(9, var(--cell-size)); border: 2.5px solid #1e293b; background: #1e293b; position: relative; }
+        .cell { background: #fff; border: 0.5px solid #cbd5e1; display: flex; align-items: center; justify-content: center; font-size: 1.8rem; cursor: pointer; position: relative; user-select: none; transition: background 0.1s; }
+        .cell:nth-child(3n) { border-right: 2.5px solid #1e293b; }
+        .cell:nth-child(9n) { border-right: none; }
+        .cell:nth-child(n+19):nth-child(-n+27), .cell:nth-child(n+46):nth-child(-n+54) { border-bottom: 2.5px solid #1e293b; }
+        .cell.selected { background-color: #2563eb !important; color: white !important; }
+        .cell.related { background-color: #f1f5f9; }
+        .cell.same-digit { background-color: #dbeafe; }
+        .cell.error { color: #ef4444 !important; }
+        .cell.initial { font-weight: 800; color: #0f172a; }
+        .cell.correct-user { color: #16a34a; font-weight: 600; }
+        .notes-grid { display: grid; grid-template-columns: repeat(3, 1fr); width: 100%; height: 100%; padding: 3px; }
+        .note-digit { display: flex; align-items: center; justify-content: center; font-size: 0.7rem; color: #64748b; }
+        .cell.selected .note-digit { color: #ffffff !important; opacity: 0.9; }
+        .note-highlight { background-color: #fbbf24; color: #000 !important; font-weight: 900; border-radius: 2px; }
+        #pause-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.95); backdrop-filter: blur(8px); display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 50; border: 2px solid #1e293b; }
+        .sidebar { width: 300px; display: flex; flex-direction: column; gap: 20px; }
+        .btn-num { height: 60px; background: white; border: 1px solid #e2e8f0; border-radius: 12px; font-size: 1.5rem; font-weight: 600; color: #2563eb; transition: 0.1s; position: relative; }
+        .btn-num.completed { color: #16a34a; background: #f0fdf4; border-color: #bbf7d0; cursor: default; }
+        .active-mode { background-color: #2563eb !important; color: white !important; }
+        .status-box { background: white; padding: 20px; border-radius: 16px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+    </style>
+</head>
+<body class="p-8">
+
+<div class="game-wrapper">
+    <div class="relative">
+        <div id="board" class="sudoku-grid"></div>
+        <div id="pause-overlay">
+            <p class="text-xl font-bold text-slate-800 mb-4">Game Paused</p>
+            <button onclick="resumeGame()" class="px-8 py-3 bg-blue-600 text-white rounded-full font-bold shadow-lg hover:bg-blue-700 transition">Resume</button>
+        </div>
+        <div class="mt-6 p-4 bg-white rounded-lg border border-slate-200 text-slate-500 text-sm flex justify-between">
+            <span><b>Shift:</b> Toggle Notes</span>
+            <span id="game-status" class="text-blue-600 font-bold">Unique Solution Guaranteed</span>
+        </div>
+    </div>
+
+    <div class="sidebar">
+        <div class="status-box space-y-4">
+            <select id="diff" onchange="newGame()" class="w-full p-2 bg-slate-50 border border-slate-200 rounded-lg font-bold outline-none">
+                <option value="easy">Easy</option>
+                <option value="medium" selected>Medium</option>
+                <option value="hard">Hard</option>
+                <option value="expert">Expert</option>
+            </select>
+            <div class="flex justify-between items-center border-t pt-4">
+                <span id="timer" class="font-mono text-3xl font-bold text-slate-800">00:00</span>
+                <button onclick="pauseGame()" class="p-2 bg-slate-100 rounded hover:bg-slate-200">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                </button>
+            </div>
+        </div>
+        <div id="numpad" class="grid grid-cols-3 gap-3"></div>
+        <div class="grid grid-cols-2 gap-3">
+            <button id="noteBtn" onclick="toggleNoteMode()" class="p-4 bg-white border border-slate-200 rounded-xl font-bold">Notes: <span id="noteStatus">OFF</span></button>
+            <button onclick="eraseCell()" class="p-4 bg-white border border-slate-200 rounded-xl font-bold text-red-500">Erase</button>
+            <button onclick="undo()" class="p-4 bg-white border border-slate-200 rounded-xl font-bold">Undo</button>
+            <button onclick="newGame()" class="p-4 bg-blue-600 text-white rounded-xl font-bold shadow-md">New Game</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    let grid = Array(81).fill(0), solution = Array(81).fill(0), notes = Array.from({length: 81}, () => []);
+    let initialMask = Array(81).fill(false), selectedIdx = 40, isNoteMode = false, history = [], time = 0, timerInt;
+    let isPaused = false, isComplete = false;
+
+    // --- Generation & Uniqueness Logic ---
+    function isValid(b, p, n) {
+        let r = Math.floor(p/9), c = p%9;
+        for (let i=0; i<9; i++) if (b[r*9+i]===n || b[i*9+c]===n) return false;
+        let br=Math.floor(r/3)*3, bc=Math.floor(c/3)*3;
+        for (let i=0; i<3; i++) for (let j=0; j<3; j++) if (b[(br+i)*9+(bc+j)]===n) return false;
+        return true;
+    }
+
+    function solve(b) {
+        for (let i=0; i<81; i++) {
+            if (b[i]===0) {
+                let nums=[1,2,3,4,5,6,7,8,9].sort(()=>Math.random()-0.5);
+                for (let n of nums) if (isValid(b,i,n)) { b[i]=n; if (solve(b)) return true; b[i]=0; }
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Counts how many solutions exist for a board
+    function countSolutions(b, count = 0) {
+        for (let i = 0; i < 81; i++) {
+            if (b[i] === 0) {
+                for (let n = 1; n <= 9; n++) {
+                    if (isValid(b, i, n)) {
+                        b[i] = n;
+                        count = countSolutions(b, count);
+                        b[i] = 0;
+                        if (count > 1) return count; // Optimization: stop if more than 1 found
+                    }
+                }
+                return count;
+            }
+        }
+        return count + 1;
+    }
+
+    function newGame() {
+        // 1. Generate full board
+        let full = Array(81).fill(0); 
+        solve(full); 
+        solution = [...full];
+        let puzzle = [...full];
+
+        // 2. Determine target holes
+        const diffs = { easy: 35, medium: 45, hard: 52, expert: 58 };
+        let targetHoles = diffs[document.getElementById('diff').value];
+        
+        // 3. Unique Pruning (Attempt to remove numbers while keeping 1 solution)
+        let attempts = 0;
+        let holes = 0;
+        let indices = Array.from({length: 81}, (_, i) => i).sort(() => Math.random() - 0.5);
+
+        for (let i of indices) {
+            if (holes >= targetHoles) break;
+            let backup = puzzle[i];
+            puzzle[i] = 0;
+            
+            // Check if still unique
+            if (countSolutions([...puzzle]) !== 1) {
+                puzzle[i] = backup; // Put it back if it creates multiple solutions
+            } else {
+                holes++;
+            }
+        }
+
+        grid = puzzle; 
+        initialMask = grid.map(v => v !== 0);
+        notes = Array.from({length: 81}, () => []); 
+        history = []; 
+        time = 0; 
+        isComplete = false;
+        resumeGame(); 
+        render(); 
+        startTimer();
+    }
+
+    function render() {
+        if (isPaused) return;
+        const board=document.getElementById('board'); board.innerHTML='';
+        const selVal=grid[selectedIdx];
+        
+        grid.forEach((val, i) => {
+            const cell=document.createElement('div');
+            cell.className='cell';
+            let r=Math.floor(i/9), c=i%9, sr=Math.floor(selectedIdx/9), sc=selectedIdx%9;
+            if (i===selectedIdx) cell.classList.add('selected');
+            else if (r===sr || c===sc || (Math.floor(r/3)===Math.floor(sr/3) && Math.floor(c/3)===Math.floor(sc/3))) cell.classList.add('related');
+            
+            if (val!==0) {
+                cell.innerText=val;
+                if (initialMask[i]) cell.classList.add('initial');
+                else if (val === solution[i]) cell.classList.add('correct-user');
+                else cell.classList.add('error');
+                if (selVal!==0 && val===selVal) cell.classList.add('same-digit');
+            } else {
+                const nGrid=document.createElement('div'); nGrid.className='notes-grid';
+                for (let n=1; n<=9; n++) {
+                    const d=document.createElement('div'); d.className='note-digit';
+                    if (notes[i].includes(n)) { d.innerText=n; if(selVal!==0 && n===selVal) d.classList.add('note-highlight'); }
+                    nGrid.appendChild(d);
+                }
+                cell.appendChild(nGrid);
+            }
+            cell.onclick=()=> { selectedIdx=i; render(); };
+            board.appendChild(cell);
+        });
+        const btn=document.getElementById('noteBtn');
+        document.getElementById('noteStatus').innerText=isNoteMode?"ON":"OFF";
+        isNoteMode ? btn.classList.add('active-mode') : btn.classList.remove('active-mode');
+        renderNumpad();
+    }
+
+    function renderNumpad() {
+        const pad = document.getElementById('numpad');
+        pad.innerHTML = '';
+        for (let i = 1; i <= 9; i++) {
+            const count = grid.filter((val, idx) => val === i && val === solution[idx]).length;
+            const btn = document.createElement('button');
+            if (count === 9) {
+                btn.className = 'btn-num completed';
+                btn.innerHTML = '✓';
+            } else {
+                btn.className = 'btn-num';
+                btn.innerText = i;
+                btn.onclick = () => inputDigit(i);
+            }
+            pad.appendChild(btn);
+        }
+    }
+
+    function inputDigit(num) {
+        if (isPaused || isComplete || initialMask[selectedIdx] || grid[selectedIdx] === solution[selectedIdx]) return;
+        history.push({g:[...grid], n:JSON.parse(JSON.stringify(notes))});
+        if (isNoteMode) {
+            const idx=notes[selectedIdx].indexOf(num);
+            idx > -1 ? notes[selectedIdx].splice(idx,1) : notes[selectedIdx].push(num);
+            grid[selectedIdx]=0;
+        } else {
+            grid[selectedIdx] = num;
+            notes[selectedIdx]=[];
+            if (grid[selectedIdx] === solution[selectedIdx]) pruneNotes(selectedIdx, num);
+        }
+        render();
+        checkWin();
+    }
+
+    function pruneNotes(pos, val) {
+        let r=Math.floor(pos/9), c=pos%9, br=Math.floor(r/3)*3, bc=Math.floor(c/3)*3;
+        for (let i=0; i<81; i++) {
+            let ir=Math.floor(i/9), ic=i%9, ibr=Math.floor(ir/3)*3, ibc=Math.floor(ic/3)*3;
+            if (ir===r || ic===c || (ibr===br && ibc===bc)) notes[i] = notes[i].filter(n => n !== val);
+        }
+    }
+
+    function toggleNoteMode() { isNoteMode=!isNoteMode; render(); }
+    function eraseCell() { if(!initialMask[selectedIdx] && grid[selectedIdx] !== solution[selectedIdx] && !isPaused) { grid[selectedIdx]=0; notes[selectedIdx]=[]; render(); } }
+    function undo() { if(history.length && !isPaused) { let l=history.pop(); grid=l.g; notes=l.n; render(); } }
+
+    function startTimer() {
+        clearInterval(timerInt);
+        timerInt = setInterval(() => {
+            if (!isPaused && !isComplete) {
+                time++;
+                const m = Math.floor(time/60).toString().padStart(2,'0'), s = (time%60).toString().padStart(2,'0');
+                document.getElementById('timer').innerText = `${m}:${s}`;
+            }
+        }, 1000);
+    }
+
+    function pauseGame() { isPaused = true; document.getElementById('pause-overlay').style.display = 'flex'; }
+    function resumeGame() { isPaused = false; document.getElementById('pause-overlay').style.display = 'none'; render(); }
+    
+    document.addEventListener("visibilitychange", () => { if (document.hidden) pauseGame(); });
+
+    function checkWin() {
+        if (!grid.includes(0) && grid.every((v, i) => v === solution[i])) {
+            isComplete = true;
+            document.getElementById('game-status').innerText = "Completed!";
+        }
+    }
+
+    window.addEventListener('keydown', (e) => {
+        if (isPaused) return;
+        if (e.key==='Shift') { toggleNoteMode(); return; }
+        if (e.key>='1' && e.key<='9') inputDigit(parseInt(e.key));
+        if (e.key==='Backspace') eraseCell();
+        if (e.key.startsWith('Arrow')) {
+            e.preventDefault();
+            if (e.key==='ArrowUp' && selectedIdx>=9) selectedIdx-=9;
+            if (e.key==='ArrowDown' && selectedIdx<=71) selectedIdx+=9;
+            if (e.key==='ArrowLeft' && selectedIdx%9>0) selectedIdx-=1;
+            if (e.key==='ArrowRight' && selectedIdx%9<8) selectedIdx+=1;
+        }
+        render();
+    });
+
+    newGame();
+</script>
+</body>
+</html>
